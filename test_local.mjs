@@ -1,7 +1,7 @@
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
-const WebSocket = require('F:/worker/cross_note/apps/server/node_modules/ws');
-
+// Resolve ws from the server workspace regardless of where the script is run from.
+const WebSocket = require('./apps/server/node_modules/ws');
 const base = 'http://localhost:8787';
 
 async function jget(path) {

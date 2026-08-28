@@ -6,3 +6,4 @@ build/
 .pub-cache/
 pubspec.lock
 .npm-cache/
+.repo-name

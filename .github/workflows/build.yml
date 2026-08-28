@@ -7,7 +7,6 @@ on:
   workflow_dispatch:
 
 jobs:
-  # 后端冒烟（REST + WS 全量联调）
   server-test:
     runs-on: ubuntu-latest
     steps:
@@ -22,7 +21,6 @@ jobs:
       - run: node apps/server/dist/index.js &
       - run: sleep 3 && node test_local.mjs
 
-  # Web 已在本地验证过，这里云端再出一份
   build-web:
     runs-on: ubuntu-latest
     steps:
@@ -40,7 +38,6 @@ jobs:
           path: apps/client/build/web
           if-no-files-found: error
 
-  # Windows 桌面版 — 需要 Visual Studio，云端 windows-latest 自带
   build-windows:
     runs-on: windows-latest
     steps:
@@ -57,12 +54,11 @@ jobs:
           path: apps/client/build/windows/x64/runner/Release
           if-no-files-found: error
 
-  # Android APK — 本机其实也能打（你已有 Android SDK 35），云端也打一份
   build-android:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: zulu
           java-version: "17"
