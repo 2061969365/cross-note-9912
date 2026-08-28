@@ -31,11 +31,13 @@ class FolderRepository {
     return f;
   }
 
+  String _clip(String s, int max) => s.length <= max ? s : s.substring(0, max);
   Future<void> rename(Folder folder, String name) async {
+    final clipped = _clip(name, 200);
     final now = DateTime.now().toIso8601String();
-    final updated = Folder(id: folder.id, name: name, createdAt: folder.createdAt, updatedAt: DateTime.parse(now), version: folder.version + 1, deviceId: folder.deviceId);
-    final json = updated.toJson();
+    final updated = Folder(id: folder.id, name: clipped, createdAt: folder.createdAt, updatedAt: DateTime.parse(now), version: folder.version + 1, deviceId: folder.deviceId);
     await _db.runTransaction(() async {
+      final json = updated.toJson();
       await _db.upsertFolderRow(json);
       await _engine.enqueue('folder', updated.id, 'UPDATE', json);
     });

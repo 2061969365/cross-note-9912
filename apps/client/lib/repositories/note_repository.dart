@@ -28,9 +28,11 @@ class NoteRepository {
 
   // Offline-first: write local immediately, enqueue for sync.
   Future<Note> create({String? folderId, String title = '', String content = ''}) async {
+    final safeTitle = _clip(title, 500);
+    final safeContent = _clip(content, 100000);
     final deviceId = await DeviceIdStore.getOrCreate();
     final now = DateTime.now().toIso8601String();
-    final note = Note(id: _uuid.v4(), folderId: folderId, title: title, content: content, createdAt: DateTime.parse(now), updatedAt: DateTime.parse(now), version: 1, deviceId: deviceId);
+    final note = Note(id: _uuid.v4(), folderId: folderId, title: safeTitle, content: safeContent, createdAt: DateTime.parse(now), updatedAt: DateTime.parse(now), version: 1, deviceId: deviceId);
     final json = note.toJson();
     await _db.runTransaction(() async {
       await _db.upsertNoteRow(json);
@@ -39,12 +41,15 @@ class NoteRepository {
     return note;
   }
 
+  String _clip(String s, int max) => s.length <= max ? s : s.substring(0, max);
   Future<void> update(Note note, {String? title, String? content, String? folderId, bool clearFolder = false}) async {
     final deviceId = await DeviceIdStore.getOrCreate();
     final now = DateTime.now().toIso8601String();
+    final safeTitle = title == null ? null : _clip(title, 500);
+    final safeContent = content == null ? null : _clip(content, 100000);
     final updated = note.copyWith(
-      title: title,
-      content: content,
+      title: safeTitle,
+      content: safeContent,
       folderId: clearFolder ? null : folderId,
       updatedAt: DateTime.parse(now),
       version: note.version + 1,

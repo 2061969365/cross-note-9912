@@ -2,7 +2,7 @@ import { createServer } from "node:http";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
-import { openDb, migrate } from "./database/db.js";
+import { openDb, migrate, getDbPath } from "./database/db.js";
 import { createSqliteStore } from "./sync/store.js";
 import { createApi } from "./api/routes.js";
 import { createWsHandler } from "./websocket/handler.js";
@@ -19,12 +19,46 @@ const wsHandler = createWsHandler(store);
 // Hono app - REST broadcaster excludes sender via WS handler's broadcast exclude path
 const api = createApi(store, { broadcaster: (msg) => wsHandler.broadcast(msg) });
 
-// resolved DB path for logging (same resolution as database/db.ts)
-const _here = dirname(fileURLToPath(import.meta.url));
-const logDbPath = process.env.DB_PATH || join(_here, "..", "..", "data", "cross_note.db");
+// --- request id / structured log + rate limit (in-memory, high enough to not affect normal use) ---
+let reqSeq = 0;
+const RATE_WINDOW_MS = 60_000;
+const RATE_MAX = 6000; // per IP per minute — high enough for stress/soak, still catches tight loops
+const rateMap = new Map<string, { count: number; resetAt: number }>();
+function rateAllow(ip: string): boolean {
+  const now = Date.now();
+  let entry = rateMap.get(ip);
+  if (!entry || now >= entry.resetAt) {
+    entry = { count: 0, resetAt: now + RATE_WINDOW_MS };
+    rateMap.set(ip, entry);
+  }
+  entry.count++;
+  if (rateMap.size > 5000) {
+    // prevent unbounded growth: evict expired
+    for (const [k, v] of rateMap) if (now >= v.resetAt) rateMap.delete(k);
+  }
+  return entry.count <= RATE_MAX;
+}
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of rateMap) if (now >= v.resetAt) rateMap.delete(k);
+}, RATE_WINDOW_MS).unref?.();
+
+// resolved DB path for logging — use same resolution as database/db.ts (not local _here join)
+const logDbPath = getDbPath();
 
 // Node http server that delegates to Hono fetch and handles WS upgrade
 const server = createServer(async (req, res) => {
+  const started = Date.now();
+  const rid = String(++reqSeq).padStart(6, "0");
+  const ip = (req.socket.remoteAddress || req.headers["x-forwarded-for"] as string || "unknown").toString().slice(0, 64);
+  // rate limit — 429 with Retry-After
+  if (!rateAllow(ip)) {
+    try {
+      if (!res.headersSent) res.writeHead(429, { "content-type": "application/json", "retry-after": "30" });
+      res.end(JSON.stringify({ error: "too many requests" }));
+    } catch {}
+    return;
+  }
   // --- body collection with size limit + close guard ---
   let body: string | undefined;
   if (req.method !== "GET" && req.method !== "HEAD") {
@@ -40,15 +74,23 @@ const server = createServer(async (req, res) => {
     for (const [k, v] of Object.entries(req.headers)) if (v) headers.set(k, Array.isArray(v) ? v.join(",") : (v as string));
     const request = new Request(url, { method: req.method, headers, body });
     const response = await api.fetch(request);
+    // request-id + CORS + security headers
+    try { response.headers.set("x-request-id", rid); } catch {}
     res.writeHead(response.status, Object.fromEntries(response.headers.entries()));
     if (response.body) {
       const buf = Buffer.from(await response.arrayBuffer());
       res.end(buf);
     } else res.end();
+    // structured access log on error/slow only to avoid noise
+    const dt = Date.now() - started;
+    if (response.status >= 400 || dt > 1000) {
+      console.log(`[http] ${rid} ${req.method} ${req.url} -> ${response.status} ${dt}ms ip=${ip}`);
+    }
   } catch (err) {
     // Hono bridge hardening: never leak stack, always respond
+    console.warn(`[http] ${rid} unhandled`, err);
     try {
-      if (!res.headersSent) res.writeHead(500, { "content-type": "application/json" });
+      if (!res.headersSent) res.writeHead(500, { "content-type": "application/json", "x-request-id": rid });
       res.end(JSON.stringify({ error: "internal error" }));
     } catch {}
   }

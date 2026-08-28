@@ -32,17 +32,23 @@ class AppShell extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final loc = GoRouterState.of(context).uri.toString();
+    final scheme = Theme.of(context).colorScheme;
     return Scaffold(
       body: child,
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: _indexOf(loc),
-        onDestinationSelected: (i) => _go(context, i),
-        destinations: const [
-          NavigationDestination(icon: Icon(Icons.note_outlined), selectedIcon: Icon(Icons.note), label: '笔记'),
-          NavigationDestination(icon: Icon(Icons.folder_outlined), selectedIcon: Icon(Icons.folder), label: '文件夹'),
-          NavigationDestination(icon: Icon(Icons.search_outlined), selectedIcon: Icon(Icons.search), label: '搜索'),
-          NavigationDestination(icon: Icon(Icons.settings_outlined), selectedIcon: Icon(Icons.settings), label: '设置'),
-        ],
+      bottomNavigationBar: Container(
+        decoration: BoxDecoration(
+          border: Border(top: BorderSide(color: scheme.outlineVariant.withValues(alpha: 0.6))),
+        ),
+        child: NavigationBar(
+          selectedIndex: _indexOf(loc),
+          onDestinationSelected: (i) => _go(context, i),
+          destinations: const [
+            NavigationDestination(icon: Icon(Icons.note_outlined), selectedIcon: Icon(Icons.note_rounded), label: '笔记'),
+            NavigationDestination(icon: Icon(Icons.folder_outlined), selectedIcon: Icon(Icons.folder_rounded), label: '文件夹'),
+            NavigationDestination(icon: Icon(Icons.search_outlined), selectedIcon: Icon(Icons.search_rounded), label: '搜索'),
+            NavigationDestination(icon: Icon(Icons.settings_outlined), selectedIcon: Icon(Icons.settings_rounded), label: '设置'),
+          ],
+        ),
       ),
     );
   }

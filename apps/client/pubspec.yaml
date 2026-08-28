@@ -24,6 +24,7 @@ dependencies:
   intl: ^0.20.1
   flutter_markdown: ^0.7.6+1
   collection: ^1.19.0
+  google_fonts: ^6.2.1
 
 dev_dependencies:
   flutter_test:

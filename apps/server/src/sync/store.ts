@@ -21,9 +21,29 @@ function rowToFolder(r: Record<string, unknown>): Folder {
 
 function parseCursor(cursor?: string | null): { time: string; id: string } {
   if (!cursor) return { time: "1970-01-01T00:00:00.000Z", id: "" };
+  // 3-part cursor `notesTime|notesId||foldersTime|foldersId` — handled in pull(), but
+  // parseCursor is used by listNotes/listFolders individually. They receive the
+  // string passed via pull's `since`. For backward compat, if no `||`, treat as
+  // shared cursor (time|id) for both tables.
+  const doublePipe = cursor.indexOf("||");
+  if (doublePipe !== -1) {
+    // This path is not used directly — pull() splits before calling listNotes/listFolders.
+    // Fallback: use the first part.
+    cursor = cursor.slice(0, doublePipe);
+  }
   const idx = cursor.indexOf("|");
   if (idx === -1) return { time: cursor, id: "" };
   return { time: cursor.slice(0, idx), id: cursor.slice(idx + 1) };
+}
+
+function parsePullCursor(cursor?: string | null): { notesSince?: string; foldersSince?: string } {
+  if (!cursor) return {};
+  const doublePipe = cursor.indexOf("||");
+  if (doublePipe === -1) {
+    // legacy 2-part cursor or plain time: reuse for both
+    return { notesSince: cursor, foldersSince: cursor };
+  }
+  return { notesSince: cursor.slice(0, doublePipe) || undefined, foldersSince: cursor.slice(doublePipe + 2) || undefined };
 }
 
 export function createSqliteStore(db: DatabaseSync): Store {
@@ -59,7 +79,31 @@ export function createSqliteStore(db: DatabaseSync): Store {
 
   // Node 24 node:sqlite no longer exposes db.transaction() — use manual BEGIN/COMMIT
   // to keep version CAS atomic. Single writer in Stage1 so BEGIN IMMEDIATE is sufficient.
+  // Under high concurrency BEGIN IMMEDIATE can throw SQLITE_BUSY; retry with backoff
+  // so callers never see 500 — the HTTP/WS layer retries handled below.
+  function withBusyRetry<T>(fn: () => T, retries = 5): T {
+    let lastErr: unknown;
+    for (let i = 0; i <= retries; i++) {
+      try {
+        return fn();
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        const busy = /SQLITE_BUSY|database is locked|busy/i.test(msg);
+        if (!busy || i === retries) throw e;
+        lastErr = e;
+        // spin-wait with Atomics-style backoff: 2ms,4ms,8ms,16ms,32ms + jitter
+        const base = 2 * (1 << i);
+        const jitter = Math.floor(Math.random() * base);
+        const ms = base + jitter;
+        const end = Date.now() + ms;
+        while (Date.now() < end) { /* busy wait — keep it synchronous for retry */ }
+      }
+    }
+    throw lastErr;
+  }
+
   function upsertNoteTx(partial: Partial<Note> & { id: string }): { entity: Note; isNew: boolean } {
+    return withBusyRetry(() => {
     db.exec("BEGIN IMMEDIATE");
     try {
       const existing = getNoteStmt.get(partial.id) as Record<string, unknown> | undefined as unknown as Note | undefined;
@@ -102,9 +146,11 @@ export function createSqliteStore(db: DatabaseSync): Store {
       } catch {}
       throw e;
     }
+    });
   }
 
   function upsertFolderTx(partial: Partial<Folder> & { id: string }): { entity: Folder; isNew: boolean } {
+    return withBusyRetry(() => {
     db.exec("BEGIN IMMEDIATE");
     try {
       const existing = getFolderStmt.get(partial.id) as Record<string, unknown> | undefined as unknown as Folder | undefined;
@@ -143,6 +189,7 @@ export function createSqliteStore(db: DatabaseSync): Store {
       } catch {}
       throw e;
     }
+    });
   }
 
   return {
@@ -182,22 +229,32 @@ export function createSqliteStore(db: DatabaseSync): Store {
     },
     pull(since, limit = 100, includeDeleted = true) {
       const lim = Math.min(Math.max(limit, 1), 500);
-      const notes = this.listNotes(since, lim, includeDeleted);
-      const folders = this.listFolders(since, lim, includeDeleted);
+      const { notesSince, foldersSince } = parsePullCursor(since);
+      const notes = this.listNotes(notesSince, lim, includeDeleted);
+      const folders = this.listFolders(foldersSince, lim, includeDeleted);
       const hasMore = notes.length === lim || folders.length === lim;
-      // compute cursor as max (updated_at, id) tuple
-      let latest: { updated_at: string; id: string } | null = null;
-      for (const r of [...(notes as unknown as { updated_at: string; id: string }[]), ...(folders as unknown as { updated_at: string; id: string }[])]) {
-        if (!latest || r.updated_at > latest.updated_at || (r.updated_at === latest.updated_at && r.id > latest.id)) {
-          latest = r;
-        }
-      }
+      // Single shared cursor across two independent tables: if we used max(updated_at)
+      // across both tables, rows in the lagging table with times between the per-table
+      // maxima would be skipped. Correct fix is per-collection cursors, but API exposes
+      // a single string cursor for Stage1 compatibility. We solve by using a 3-part
+      // cursor `notesTime|notesId|foldersTime|foldersId` encoded as `time|id|time|id`,
+      // with backward compat: if only one pipe (legacy 2-part cursor), reuse it for both.
+      // This change makes pagination lossless without duplicates after the first wrap.
       let cursor: string;
-      if (latest) {
-        cursor = `${latest.updated_at}|${latest.id}`;
+      if (!hasMore) {
+        const latestNote = notes.length ? (notes[notes.length - 1] as unknown as { updated_at: string; id: string }) : null;
+        const latestFolder = folders.length ? (folders[folders.length - 1] as unknown as { updated_at: string; id: string }) : null;
+        let latest: { updated_at: string; id: string } | null = null;
+        for (const r of [latestNote, latestFolder].filter(Boolean) as { updated_at: string; id: string }[]) {
+          if (!latest || r.updated_at > latest.updated_at || (r.updated_at === latest.updated_at && r.id > latest.id)) latest = r;
+        }
+        cursor = latest ? `${latest.updated_at}|${latest.id}|${latest.updated_at}|${latest.id}` : (since ?? "1970-01-01T00:00:00.000Z");
       } else {
-        // do not regress cursor when no rows returned
-        cursor = since ?? "1970-01-01T00:00:00.000Z";
+        const noteCur = notes.length ? `${(notes[notes.length - 1] as unknown as { updated_at: string; id: string }).updated_at}|${(notes[notes.length - 1] as unknown as { updated_at: string; id: string }).id}` : (since ?? "1970-01-01T00:00:00.000Z");
+        const folderCur = folders.length ? `${(folders[folders.length - 1] as unknown as { updated_at: string; id: string }).updated_at}|${(folders[folders.length - 1] as unknown as { updated_at: string; id: string }).id}` : (since ?? "1970-01-01T00:00:00.000Z");
+        // encode as noteCur|folderCur with separator ||| not to clash with time's :
+        // use pipe count: first two segments = notes cursor, next two = folders cursor (each time|id)
+        cursor = `${noteCur}||${folderCur}`;
       }
       return { notes, folders, cursor, hasMore };
     },

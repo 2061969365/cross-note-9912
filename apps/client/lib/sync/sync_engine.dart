@@ -159,9 +159,11 @@ class SyncEngine {
 
   Future<void> _advanceCursor(String? updatedAt) async {
     if (updatedAt == null) return;
+    // pull()'s dual cursor is stored via _pull loop; broadcast's single entity cursor
+    // is just for incremental advancement — compare lexicographically
     if (_cursor == null || updatedAt.compareTo(_cursor!) > 0) {
       _cursor = updatedAt;
-      await db.setMeta('sync_cursor', _cursor!);
+      try { await db.setMeta('sync_cursor', _cursor!); } catch (_) {}
     }
   }
 
@@ -361,10 +363,10 @@ class SyncEngine {
 
   Future<void> _pull() async {
     try {
-      // hasMore loop: loop while hasMore, handle composite cursor
+      // hasMore loop — use sweep limit 100; pull() dual cursor handles per-table pagination
       String? cursor = _cursor;
       while (true) {
-        final res = await api.pull(since: cursor, limit: 200);
+        final res = await api.pull(since: cursor, limit: 100);
         await _applyPullResult(res);
         final nextCursor = (res['cursor'] as String?) ?? (res['nextCursor'] as String?) ?? (res['next_cursor'] as String?);
         final hasMore = (res['hasMore'] as bool?) ?? (res['has_more'] as bool?) ?? false;
@@ -373,6 +375,7 @@ class SyncEngine {
           if (_cursor == null || nextCursor.compareTo(_cursor!) > 0) {
             _cursor = nextCursor;
           }
+          try { await db.setMeta('sync_cursor', _cursor!); } catch (_) {}
         }
         if (!hasMore) break;
         if (nextCursor == null) break;
