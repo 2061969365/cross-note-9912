@@ -1,0 +1,8 @@
+node_modules/
+dist/
+data/
+.dart_tool/
+build/
+.pub-cache/
+pubspec.lock
+.npm-cache/

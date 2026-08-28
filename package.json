@@ -1,0 +1,9 @@
+{
+  "name": "cross-note",
+  "private": true,
+  "workspaces": ["apps/server", "packages/protocol"],
+  "scripts": {
+    "dev:server": "npm --workspace apps/server run dev",
+    "build:server": "npm --workspace apps/server run build"
+  }
+}
