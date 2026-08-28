@@ -1,3 +1,7 @@
+// DEPRECATED: tables defined here are not wired; AppDatabase uses raw SQL. Will be removed.
+// These Drift Table definitions are dead code — AppDatabase in database.dart creates
+// tables via manual DDL (allTables is intentionally empty). Kept for reference until
+// the quality-group cleanup removes this file.
 import 'package:drift/drift.dart';
 
 class Notes extends Table {

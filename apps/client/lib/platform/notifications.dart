@@ -1,3 +1,4 @@
+// Stage1 stub — not wired; Stage2 will integrate with platform notifications.
 import 'package:flutter/foundation.dart';
 
 /// 阶段一为桩实现：仅打日志，阶段二再接入系统通知。

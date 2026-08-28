@@ -23,23 +23,32 @@ class FolderRepository {
     final deviceId = await DeviceIdStore.getOrCreate();
     final now = DateTime.now().toIso8601String();
     final f = Folder(id: _uuid.v4(), name: name, createdAt: DateTime.parse(now), updatedAt: DateTime.parse(now), version: 1, deviceId: deviceId);
-    await _db.upsertFolderRow(f.toJson());
-    await _engine.enqueue('folder', f.id, 'CREATE', f.toJson());
+    final json = f.toJson();
+    await _db.runTransaction(() async {
+      await _db.upsertFolderRow(json);
+      await _engine.enqueue('folder', f.id, 'CREATE', json);
+    });
     return f;
   }
 
   Future<void> rename(Folder folder, String name) async {
     final now = DateTime.now().toIso8601String();
     final updated = Folder(id: folder.id, name: name, createdAt: folder.createdAt, updatedAt: DateTime.parse(now), version: folder.version + 1, deviceId: folder.deviceId);
-    await _db.upsertFolderRow(updated.toJson());
-    await _engine.enqueue('folder', updated.id, 'UPDATE', updated.toJson());
+    final json = updated.toJson();
+    await _db.runTransaction(() async {
+      await _db.upsertFolderRow(json);
+      await _engine.enqueue('folder', updated.id, 'UPDATE', json);
+    });
   }
 
   Future<void> softDelete(Folder folder) async {
     final now = DateTime.now().toIso8601String();
     final deleted = Folder(id: folder.id, name: folder.name, createdAt: folder.createdAt, updatedAt: DateTime.parse(now), deletedAt: DateTime.parse(now), version: folder.version + 1, deviceId: folder.deviceId);
-    await _db.upsertFolderRow(deleted.toJson());
-    await _engine.enqueue('folder', deleted.id, 'DELETE', deleted.toJson());
+    final json = deleted.toJson();
+    await _db.runTransaction(() async {
+      await _db.upsertFolderRow(json);
+      await _engine.enqueue('folder', deleted.id, 'DELETE', json);
+    });
   }
 
   Map<String, dynamic> _map(Map<String, dynamic> r) => {

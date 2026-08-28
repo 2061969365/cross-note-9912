@@ -4,6 +4,7 @@ publish_to: "none"
 version: 0.1.0+1
 environment:
   sdk: ">=3.3.0 <4.0.0"
+  # Flutter version kept as caret for flexibility; pin to exact version in CI (flutter-action) when reproducibility requires it.
   flutter: ">=3.22.0"
 
 dependencies:

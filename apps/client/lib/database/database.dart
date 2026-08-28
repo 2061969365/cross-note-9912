@@ -4,6 +4,15 @@ import 'package:drift/drift.dart';
 import 'package:drift_flutter/drift_flutter.dart';
 import 'package:uuid/uuid.dart';
 
+/// Manual DDL database — no codegen.
+///
+/// We intentionally keep [allTables] empty and create tables via raw SQL
+/// in [migration.onCreate]. This avoids needing `database.g.dart` and keeps
+/// the schema portable. Drift table classes in `tables/notes.dart` are dead
+/// code (deprecated) and will be removed; do not wire them here.
+/// Stream invalidation is handled manually via [notifyUpdates] + broadcast
+/// controllers because [customSelect] with `readsFrom: const {}` never
+/// auto-invalidates.
 class AppDatabase extends GeneratedDatabase {
   AppDatabase() : super(driftDatabase(name: 'cross_note'));
 
@@ -12,6 +21,35 @@ class AppDatabase extends GeneratedDatabase {
 
   @override
   List<TableInfo> get allTables => const [];
+
+  // Broadcast controllers to drive watch streams manually.
+  // Drift's watch invalidation requires readsFrom to contain TableInfo
+  // objects, but we use manual DDL (allTables == []). Instead we re-query
+  // on every explicit notification.
+  final StreamController<void> _notesChangeController =
+      StreamController<void>.broadcast();
+  final StreamController<void> _foldersChangeController =
+      StreamController<void>.broadcast();
+
+  void _notifyNotes() {
+    // Notify drift's update stream (for any future readsFrom wiring) and
+    // our manual broadcast so watchNotes re-emits.
+    try {
+      notifyUpdates({TableUpdate('notes', kind: UpdateKind.insert)});
+    } catch (_) {}
+    if (!_notesChangeController.isClosed) {
+      _notesChangeController.add(null);
+    }
+  }
+
+  void _notifyFolders() {
+    try {
+      notifyUpdates({TableUpdate('folders', kind: UpdateKind.insert)});
+    } catch (_) {}
+    if (!_foldersChangeController.isClosed) {
+      _foldersChangeController.add(null);
+    }
+  }
 
   // Create tables manually — no codegen
   @override
@@ -56,31 +94,94 @@ class AppDatabase extends GeneratedDatabase {
       await customStatement('CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT)');
       await customStatement('CREATE INDEX IF NOT EXISTS idx_notes_updated_at ON notes(updated_at)');
       await customStatement('CREATE INDEX IF NOT EXISTS idx_notes_folder_id ON notes(folder_id)');
+      // Additional indexes for query performance
+      await customStatement('CREATE INDEX IF NOT EXISTS idx_notes_updated_id ON notes(updated_at, id)');
+      await customStatement('CREATE INDEX IF NOT EXISTS idx_folders_updated_id ON folders(updated_at, id)');
+      await customStatement('CREATE INDEX IF NOT EXISTS idx_notes_deleted ON notes(deleted_at)');
     },
     beforeOpen: (details) async {
       await customStatement('PRAGMA journal_mode=WAL');
       await customStatement('PRAGMA foreign_keys=ON');
       // ensure meta exists for older installs
       await customStatement('CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT)');
+      // Ensure new indexes exist on existing installs (idempotent)
+      await customStatement('CREATE INDEX IF NOT EXISTS idx_notes_updated_id ON notes(updated_at, id)');
+      await customStatement('CREATE INDEX IF NOT EXISTS idx_folders_updated_id ON folders(updated_at, id)');
+      await customStatement('CREATE INDEX IF NOT EXISTS idx_notes_deleted ON notes(deleted_at)');
+      // Reset orphaned SYNCING entries left after a crash/restart so they
+      // are retried instead of stuck forever.
+      try {
+        await customStatement("UPDATE sync_queue SET status='PENDING' WHERE status='SYNCING'");
+      } catch (_) {}
     },
   );
 
+  /// Transaction helper via raw SQL BEGIN/COMMIT/ROLLBACK.
+  /// Named [runTransaction] to avoid shadowing [GeneratedDatabase.transaction].
+  Future<void> runTransaction(Future<void> Function() fn) async {
+    await customStatement('BEGIN');
+    try {
+      await fn();
+      await customStatement('COMMIT');
+    } catch (e) {
+      try {
+        await customStatement('ROLLBACK');
+      } catch (_) {}
+      rethrow;
+    }
+  }
+
+  @override
+  Future<T> transaction<T>(Future<T> Function() action, {bool requireNew = false}) async {
+    await customStatement('BEGIN');
+    try {
+      final result = await action();
+      await customStatement('COMMIT');
+      return result;
+    } catch (e) {
+      try {
+        await customStatement('ROLLBACK');
+      } catch (_) {}
+      rethrow;
+    }
+  }
+
+  @override
+  Future<void> close() async {
+    await _notesChangeController.close();
+    await _foldersChangeController.close();
+    await super.close();
+  }
+
   // Notes
-  Stream<List<Map<String, dynamic>>> watchNotes({String? folderId, String? query}) {
-    var sql = "SELECT * FROM notes WHERE deleted_at IS NULL";
-    final vars = <Variable>[];
-    if (folderId != null) {
-      sql += " AND folder_id = ?";
-      vars.add(Variable.withString(folderId));
+  Stream<List<Map<String, dynamic>>> watchNotes({String? folderId, String? query}) async* {
+    Future<List<Map<String, dynamic>>> fetch() async {
+      var sql = "SELECT * FROM notes WHERE deleted_at IS NULL";
+      final vars = <Variable>[];
+      if (folderId != null) {
+        sql += " AND folder_id = ?";
+        vars.add(Variable.withString(folderId));
+      }
+      if (query != null && query.trim().isNotEmpty) {
+        // Escape LIKE wildcards so user input is treated literally.
+        final esc = query.trim().replaceAll('%', r'\%').replaceAll('_', r'\_');
+        final q = '%$esc%';
+        sql += " AND (title LIKE ? ESCAPE '\\' OR content LIKE ? ESCAPE '\\')";
+        vars.add(Variable.withString(q));
+        vars.add(Variable.withString(q));
+      }
+      sql += " ORDER BY updated_at DESC";
+      // readsFrom empty would never auto-invalidate; we drive invalidation
+      // manually via _notesChangeController, so a one-shot get() per emission
+      // is correct. Keep readsFrom empty to avoid drift asserting on missing tables.
+      final rows = await customSelect(sql, variables: vars, readsFrom: const {}).get();
+      return rows.map((r) => r.data).toList();
     }
-    if (query != null && query.trim().isNotEmpty) {
-      sql += " AND (title LIKE ? OR content LIKE ?)";
-      final q = '%${query.trim()}%';
-      vars.add(Variable.withString(q));
-      vars.add(Variable.withString(q));
+
+    yield await fetch();
+    await for (final _ in _notesChangeController.stream) {
+      yield await fetch();
     }
-    sql += " ORDER BY updated_at DESC";
-    return customSelect(sql, variables: vars, readsFrom: const {}).watch().map((rows) => rows.map((r) => r.data).toList());
   }
 
   Future<Map<String, dynamic>?> getNoteById(String id) async {
@@ -93,8 +194,19 @@ class AppDatabase extends GeneratedDatabase {
     return rows.map((r) => r.data).toList();
   }
 
-  Stream<List<Map<String, dynamic>>> watchFolders() {
-    return customSelect("SELECT * FROM folders WHERE deleted_at IS NULL ORDER BY updated_at DESC", readsFrom: const {}).watch().map((rows) => rows.map((r) => r.data).toList());
+  Stream<List<Map<String, dynamic>>> watchFolders() async* {
+    Future<List<Map<String, dynamic>>> fetch() async {
+      final rows = await customSelect(
+        "SELECT * FROM folders WHERE deleted_at IS NULL ORDER BY updated_at DESC",
+        readsFrom: const {},
+      ).get();
+      return rows.map((r) => r.data).toList();
+    }
+
+    yield await fetch();
+    await for (final _ in _foldersChangeController.stream) {
+      yield await fetch();
+    }
   }
 
   Future<void> upsertNoteRow(Map<String, dynamic> j) async {
@@ -112,6 +224,7 @@ class AppDatabase extends GeneratedDatabase {
         (j['device_id'] as String?) ?? '',
       ],
     );
+    _notifyNotes();
   }
 
   Future<void> upsertFolderRow(Map<String, dynamic> j) async {
@@ -127,6 +240,7 @@ class AppDatabase extends GeneratedDatabase {
         (j['device_id'] as String?) ?? '',
       ],
     );
+    _notifyFolders();
   }
 
   Future<void> enqueue(String entityType, String entityId, String operation, Map<String, dynamic> payload) async {
@@ -137,7 +251,13 @@ class AppDatabase extends GeneratedDatabase {
   }
 
   Future<List<Map<String, dynamic>>> pendingQueue({int limit = 50}) async {
-    final rows = await customSelect("SELECT * FROM sync_queue WHERE status IN ('PENDING','FAILED') ORDER BY created_at ASC LIMIT ?", variables: [Variable.withInt(limit)]).get();
+    // Include SYNCING so orphaned in-flight items are retried after the
+    // startup reset in beforeOpen. Without this, items stuck in SYNCING
+    // would never be picked up again.
+    final rows = await customSelect(
+      "SELECT * FROM sync_queue WHERE status IN ('PENDING','FAILED','SYNCING') ORDER BY created_at ASC LIMIT ?",
+      variables: [Variable.withInt(limit)],
+    ).get();
     return rows.map((r) => r.data).toList();
   }
 

@@ -54,6 +54,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
               final prefs = await SharedPreferences.getInstance();
               await prefs.setString('server_url', v.trim());
               if (!mounted) return;
+              // ignore: use_build_context_synchronously
               ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已保存，重启 App 后生效（或点立即同步）')));
             },
           ),
@@ -64,6 +65,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
               await prefs.setString('server_url', _serverCtrl.text.trim());
               await ref.read(syncEngineProvider).forceSync();
               if (!mounted) return;
+              // ignore: use_build_context_synchronously
               ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已触发同步')));
             },
             child: const Text('保存并立即同步'),

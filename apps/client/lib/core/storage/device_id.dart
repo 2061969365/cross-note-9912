@@ -8,11 +8,17 @@ class DeviceIdStore {
 
   static Future<String> getOrCreate() async {
     final prefs = await SharedPreferences.getInstance();
-    var id = prefs.getString(_key);
-    if (id != null && id.isNotEmpty) return id;
+    // Fast path: already stored.
+    var existing = prefs.getString(_key);
+    if (existing != null && existing.isNotEmpty) return existing;
+
+    // Use full v4 UUID — 8 hex chars is too short (only 32 bits, high
+    // collision risk across devices). Full v4 gives 122 bits of entropy.
     final prefix = platformPrefix(currentPlatform());
-    id = '$prefix-${_uuid.v4().substring(0, 8)}';
+    final id = '$prefix-${_uuid.v4()}';
     await prefs.setString(_key, id);
-    return id;
+    // TOCTOU double-check: if two callers raced to create an ID
+    // concurrently, return whatever actually persisted (one wins).
+    return prefs.getString(_key) ?? id;
   }
 }

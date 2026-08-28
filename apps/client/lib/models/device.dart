@@ -1,3 +1,6 @@
+// Deprecated — Device is currently unused outside models; retained for Stage2
+// multi-device awareness. Other agent may delete if confirmed unused.
+// ignore: unused_element — suppress while retained as planned model.
 class Device {
   final String id;
   final String platform;

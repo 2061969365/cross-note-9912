@@ -1,3 +1,5 @@
+// Planned error hierarchy — sealed AppError with typed subclasses (Network/Database/Sync/Validation).
+// Extend as features require; not yet exhaustively applied across all call sites.
 sealed class AppError implements Exception {
   final String message;
   const AppError(this.message);

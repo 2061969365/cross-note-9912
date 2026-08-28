@@ -115,7 +115,8 @@ class _NotesListPageState extends ConsumerState<NotesListPage> {
                                   ],
                                 ),
                               );
-                              if (ok == true && context.mounted) {
+                              // ignore: use_build_context_synchronously
+                              if (ok == true && mounted) {
                                 await ref.read(noteRepositoryProvider).softDelete(n);
                               }
                             }
@@ -136,6 +137,7 @@ class _NotesListPageState extends ConsumerState<NotesListPage> {
         onPressed: () async {
           final repo = ref.read(noteRepositoryProvider);
           final note = await repo.create(folderId: selectedFolderId, title: '新笔记', content: '');
+          // ignore: use_build_context_synchronously
           if (mounted) context.push('/note/${note.id}');
         },
         icon: const Icon(Icons.add),

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
 import '../core/storage/device_id.dart';
@@ -30,8 +31,11 @@ class NoteRepository {
     final deviceId = await DeviceIdStore.getOrCreate();
     final now = DateTime.now().toIso8601String();
     final note = Note(id: _uuid.v4(), folderId: folderId, title: title, content: content, createdAt: DateTime.parse(now), updatedAt: DateTime.parse(now), version: 1, deviceId: deviceId);
-    await _db.upsertNoteRow(note.toJson());
-    await _engine.enqueue('note', note.id, 'CREATE', note.toJson());
+    final json = note.toJson();
+    await _db.runTransaction(() async {
+      await _db.upsertNoteRow(json);
+      await _engine.enqueue('note', note.id, 'CREATE', json);
+    });
     return note;
   }
 
@@ -49,22 +53,31 @@ class NoteRepository {
     // manual folder clear handling for copyWith
     final json = updated.toJson();
     if (clearFolder) json['folder_id'] = null;
-    await _db.upsertNoteRow(json);
-    await _engine.enqueue('note', updated.id, 'UPDATE', json);
+    await _db.runTransaction(() async {
+      await _db.upsertNoteRow(json);
+      await _engine.enqueue('note', updated.id, 'UPDATE', json);
+    });
   }
 
   Future<void> softDelete(Note note) async {
     final now = DateTime.now().toIso8601String();
     final deleted = note.copyWith(deletedAt: DateTime.parse(now), updatedAt: DateTime.parse(now), version: note.version + 1);
-    await _db.upsertNoteRow(deleted.toJson());
-    await _engine.enqueue('note', deleted.id, 'DELETE', deleted.toJson());
+    final json = deleted.toJson();
+    await _db.runTransaction(() async {
+      await _db.upsertNoteRow(json);
+      await _engine.enqueue('note', deleted.id, 'DELETE', json);
+    });
   }
 
   Future<void> restore(Note note) async {
     final now = DateTime.now().toIso8601String();
-    final restored = Note(id: note.id, folderId: note.folderId, title: note.title, content: note.content, createdAt: note.createdAt, updatedAt: DateTime.parse(now), deletedAt: null, version: note.version + 1, deviceId: note.deviceId);
-    await _db.upsertNoteRow(restored.toJson());
-    await _engine.enqueue('note', restored.id, 'UPDATE', restored.toJson());
+    final deviceId = await DeviceIdStore.getOrCreate();
+    final restored = Note(id: note.id, folderId: note.folderId, title: note.title, content: note.content, createdAt: note.createdAt, updatedAt: DateTime.parse(now), deletedAt: null, version: note.version + 1, deviceId: deviceId);
+    final json = restored.toJson();
+    await _db.runTransaction(() async {
+      await _db.upsertNoteRow(json);
+      await _engine.enqueue('note', restored.id, 'UPDATE', json);
+    });
   }
 
   Future<void> hardDelete(String id) async {

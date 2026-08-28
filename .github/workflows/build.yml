@@ -1,5 +1,13 @@
 name: Build CrossNote
 
+# Avoid concurrent runs on the same branch — newer push cancels the previous run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Actions pinned to major versions (@v4/@v5) for stability; SHA pinning deferred.
+# setup-java@v5 and subosito/flutter-action cache:true are intentionally kept.
+
 on:
   push:
     branches: [main, master]
@@ -19,7 +27,9 @@ jobs:
       - run: npm --prefix apps/server ci
       - run: npm --prefix apps/server run build
       - run: node apps/server/dist/index.js &
-      - run: sleep 3 && node test_local.mjs
+        env:
+          PORT: 8787
+      - run: for i in {1..10}; do curl -sf http://localhost:8787/api/health && break || sleep 1; done; node test_local.mjs
 
   build-web:
     runs-on: ubuntu-latest

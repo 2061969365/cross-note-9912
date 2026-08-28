@@ -26,8 +26,7 @@ packages/protocol/sync_protocol.md  协议权威定义
 ```
 
 ## 迁移预留
-- `Store` 接口：当前为 node:sqlite 实现，未来替换为 DO storage / D1。
-- `Broadcaster` 接口：当前为 ws 内存广播，未来替换为 DO hibernatable WebSocket + 跨实例发布。
+- 服务端通过 Store/Broadcaster 函数式接口隔离（当前为同步实现，Stage2 需改为异步以适配 DO）：`Store` 当前为 node:sqlite 实现，未来替换为 DO storage / D1；`Broadcaster` 当前为 ws 内存广播，未来替换为 DO hibernatable WebSocket + 跨实例发布。
 - 协议为纯JSON，不依赖Node特定头部或中间件，便于 Worker 复用。
 - 客户端通过 `server_url` 配置服务器地址，切换环境无需改代码。
 
